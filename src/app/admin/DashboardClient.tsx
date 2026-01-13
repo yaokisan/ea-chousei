@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { Calendar, Clock, Users, Plus, ChevronRight, MoreVertical, Trash2, Copy, ExternalLink } from 'lucide-react';
-import { format, parseISO } from 'date-fns';
+import { format } from 'date-fns';
 import { ja } from 'date-fns/locale';
 import { Card, CardContent } from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
@@ -13,6 +13,23 @@ import type { EventWithSlots } from '@/types';
 interface DashboardClientProps {
   events: EventWithSlots[];
 }
+
+// 日付を安全にDateオブジェクトに変換
+const parseDate = (date: string | Date): Date => {
+  if (typeof date === 'string') {
+    const dateStr = date.split('T')[0];
+    return new Date(dateStr + 'T00:00:00');
+  }
+  return new Date(date);
+};
+
+// 日付キーを取得
+const getDateKey = (date: string | Date): string => {
+  if (typeof date === 'string') {
+    return date.split('T')[0];
+  }
+  return new Date(date).toISOString().split('T')[0];
+};
 
 export default function DashboardClient({ events: initialEvents }: DashboardClientProps) {
   const [events, setEvents] = useState(initialEvents);
@@ -31,12 +48,12 @@ export default function DashboardClient({ events: initialEvents }: DashboardClie
     }
   };
 
-  const formatDateRange = (slots: { date: string }[]) => {
+  const formatDateRange = (slots: { date: string | Date }[]) => {
     if (slots.length === 0) return '日程未設定';
 
-    const dates = slots.map((s) => s.date).sort();
-    const firstDate = parseISO(dates[0]);
-    const lastDate = parseISO(dates[dates.length - 1]);
+    const dates = slots.map((s) => getDateKey(s.date)).sort();
+    const firstDate = parseDate(dates[0]);
+    const lastDate = parseDate(dates[dates.length - 1]);
 
     if (dates.length === 1) {
       return format(firstDate, 'M/d (E)', { locale: ja });

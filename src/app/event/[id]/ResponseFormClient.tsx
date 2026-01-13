@@ -2,7 +2,7 @@
 
 import { useState, useMemo } from 'react';
 import { Calendar, Clock, ChevronDown, ChevronUp, CheckCircle2 } from 'lucide-react';
-import { format, parseISO } from 'date-fns';
+import { format } from 'date-fns';
 import { ja } from 'date-fns/locale';
 import Button from '@/components/ui/Button';
 import Input from '@/components/ui/Input';
@@ -19,6 +19,31 @@ interface SlotResponse {
   comment: string;
 }
 
+// 日付を安全に文字列に変換
+const formatDateKey = (date: string | Date): string => {
+  if (typeof date === 'string') {
+    return date.split('T')[0];
+  }
+  return new Date(date).toISOString().split('T')[0];
+};
+
+// 日付を安全にDateオブジェクトに変換
+const parseDate = (date: string | Date): Date => {
+  if (typeof date === 'string') {
+    return new Date(date.split('T')[0] + 'T00:00:00');
+  }
+  return new Date(date);
+};
+
+// 時間を安全にフォーマット
+const formatTime = (time: string | Date): string => {
+  if (typeof time === 'string') {
+    // "HH:mm:ss" or "HH:mm" format
+    return time.substring(0, 5);
+  }
+  return format(new Date(time), 'HH:mm');
+};
+
 export default function ResponseFormClient({ event }: Props) {
   const [name, setName] = useState('');
   const [responses, setResponses] = useState<Record<string, SlotResponse>>({});
@@ -31,14 +56,15 @@ export default function ResponseFormClient({ event }: Props) {
   const groupedSlots = useMemo(() => {
     const groups: Record<string, TimeSlot[]> = {};
     event.time_slots.forEach((slot) => {
-      if (!groups[slot.date]) {
-        groups[slot.date] = [];
+      const dateKey = formatDateKey(slot.date);
+      if (!groups[dateKey]) {
+        groups[dateKey] = [];
       }
-      groups[slot.date].push(slot);
+      groups[dateKey].push(slot);
     });
     // 時間順にソート
     Object.values(groups).forEach((slots) => {
-      slots.sort((a, b) => a.start_time.localeCompare(b.start_time));
+      slots.sort((a, b) => formatTime(a.start_time).localeCompare(formatTime(b.start_time)));
     });
     return groups;
   }, [event.time_slots]);
@@ -126,7 +152,7 @@ export default function ResponseFormClient({ event }: Props) {
     }
 
     // △の回答にコメントがあるか確認
-    for (const [slotId, response] of Object.entries(responses)) {
+    for (const [, response] of Object.entries(responses)) {
       if (response.status === 'maybe' && !response.comment.trim()) {
         setError('「△」の回答にはコメントが必要です');
         return false;
@@ -250,7 +276,6 @@ export default function ResponseFormClient({ event }: Props) {
             const slots = groupedSlots[date];
             const isExpanded = expandedDates.has(date);
             const dateStatus = getDateStatus(date);
-            const allAnswered = slots.every((s) => responses[s.id]?.status);
 
             return (
               <div
@@ -261,7 +286,7 @@ export default function ResponseFormClient({ event }: Props) {
                 <div className="flex items-center gap-3 p-4">
                   <div className="flex-1">
                     <div className="font-medium text-slate-900">
-                      {format(parseISO(date), 'M/d (E)', { locale: ja })}
+                      {format(parseDate(date), 'M/d (E)', { locale: ja })}
                     </div>
                     <div className="text-sm text-slate-500">
                       {slots.length}件の時間帯
@@ -303,7 +328,7 @@ export default function ResponseFormClient({ event }: Props) {
                           <div className="flex items-center gap-3">
                             <div className="flex-1">
                               <span className="text-sm font-medium text-slate-700">
-                                {slot.start_time} 〜 {slot.end_time}
+                                {formatTime(slot.start_time)} 〜 {formatTime(slot.end_time)}
                               </span>
                             </div>
                             <ResponseButtonGroup
