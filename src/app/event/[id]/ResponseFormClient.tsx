@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { Calendar, Clock, ChevronDown, ChevronUp, CheckCircle2 } from 'lucide-react';
+import { Calendar, Clock, ChevronDown, ChevronUp, CheckCircle2, Circle, AlertCircle } from 'lucide-react';
 import { format } from 'date-fns';
 import { ja } from 'date-fns/locale';
 import Button from '@/components/ui/Button';
@@ -19,29 +19,42 @@ interface SlotResponse {
   comment: string;
 }
 
-// 日付を安全に文字列に変換
-const formatDateKey = (date: string | Date): string => {
-  if (typeof date === 'string') {
-    return date.split('T')[0];
-  }
-  return new Date(date).toISOString().split('T')[0];
-};
-
-// 日付を安全にDateオブジェクトに変換
+// 安全な日付パース関数
 const parseDate = (date: string | Date): Date => {
   if (typeof date === 'string') {
-    return new Date(date.split('T')[0] + 'T00:00:00');
+    // YYYY-MM-DD形式の場合
+    const dateOnly = date.split('T')[0];
+    return new Date(dateOnly + 'T00:00:00');
   }
   return new Date(date);
 };
 
-// 時間を安全にフォーマット
-const formatTime = (time: string | Date): string => {
-  if (typeof time === 'string') {
-    // "HH:mm:ss" or "HH:mm" format
-    return time.substring(0, 5);
+// 時間文字列から時刻のみ取得
+const formatTime = (time: string): string => {
+  // HH:MM:SS or HH:MM 形式から HH:MM を取得
+  return time.substring(0, 5);
+};
+
+// 時間範囲から1時間刻みのスロットを生成
+const generateHourlySlots = (slot: TimeSlot): { id: string; time: string; originalSlot: TimeSlot }[] => {
+  const startTime = formatTime(slot.start_time);
+  const endTime = formatTime(slot.end_time);
+
+  const startHour = parseInt(startTime.split(':')[0], 10);
+  const endHour = parseInt(endTime.split(':')[0], 10);
+
+  const slots: { id: string; time: string; originalSlot: TimeSlot }[] = [];
+
+  for (let hour = startHour; hour < endHour; hour++) {
+    const timeStr = `${hour.toString().padStart(2, '0')}:00`;
+    slots.push({
+      id: `${slot.id}_${hour}`,
+      time: timeStr,
+      originalSlot: slot,
+    });
   }
-  return format(new Date(time), 'HH:mm');
+
+  return slots;
 };
 
 export default function ResponseFormClient({ event }: Props) {
@@ -52,26 +65,47 @@ export default function ResponseFormClient({ event }: Props) {
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // 日付ごとにスロットをグループ化
+  // 日付ごとにスロットをグループ化し、1時間刻みに分割
   const groupedSlots = useMemo(() => {
-    const groups: Record<string, TimeSlot[]> = {};
+    const groups: Record<string, { id: string; time: string; originalSlot: TimeSlot }[]> = {};
+
     event.time_slots.forEach((slot) => {
-      const dateKey = formatDateKey(slot.date);
+      const dateKey = typeof slot.date === 'string' ? slot.date.split('T')[0] : slot.date;
       if (!groups[dateKey]) {
         groups[dateKey] = [];
       }
-      groups[dateKey].push(slot);
+
+      // 1時間刻みのスロットを生成
+      const hourlySlots = generateHourlySlots(slot);
+      groups[dateKey].push(...hourlySlots);
     });
+
     // 時間順にソート
     Object.values(groups).forEach((slots) => {
-      slots.sort((a, b) => formatTime(a.start_time).localeCompare(formatTime(b.start_time)));
+      slots.sort((a, b) => a.time.localeCompare(b.time));
     });
+
     return groups;
   }, [event.time_slots]);
 
   const sortedDates = Object.keys(groupedSlots).sort();
 
-  // 日付全体のステータスを計算
+  // 全スロットID一覧
+  const allSlotIds = useMemo(() => {
+    return Object.values(groupedSlots).flat().map(s => s.id);
+  }, [groupedSlots]);
+
+  // 日付の回答完了状態を確認
+  const getDateCompletionStatus = (date: string): 'complete' | 'partial' | 'none' => {
+    const slots = groupedSlots[date];
+    const answeredCount = slots.filter((s) => responses[s.id]?.status).length;
+
+    if (answeredCount === 0) return 'none';
+    if (answeredCount === slots.length) return 'complete';
+    return 'partial';
+  };
+
+  // 日付全体のステータスを計算（表示用）
   const getDateStatus = (date: string): ResponseStatus | null => {
     const slots = groupedSlots[date];
     const slotResponses = slots.map((s) => responses[s.id]?.status).filter(Boolean);
@@ -105,11 +139,6 @@ export default function ResponseFormClient({ event }: Props) {
       };
     });
     setResponses(newResponses);
-
-    // △の場合は展開する
-    if (status === 'maybe') {
-      setExpandedDates((prev) => new Set([...prev, date]));
-    }
   };
 
   // 個別スロットのステータス設定
@@ -136,7 +165,7 @@ export default function ResponseFormClient({ event }: Props) {
 
   // 回答率
   const answeredCount = Object.values(responses).filter((r) => r.status !== null).length;
-  const totalSlots = event.time_slots.length;
+  const totalSlots = allSlotIds.length;
   const progress = totalSlots > 0 ? (answeredCount / totalSlots) * 100 : 0;
 
   // バリデーション
@@ -152,7 +181,7 @@ export default function ResponseFormClient({ event }: Props) {
     }
 
     // △の回答にコメントがあるか確認
-    for (const [, response] of Object.entries(responses)) {
+    for (const [slotId, response] of Object.entries(responses)) {
       if (response.status === 'maybe' && !response.comment.trim()) {
         setError('「△」の回答にはコメントが必要です');
         return false;
@@ -160,6 +189,14 @@ export default function ResponseFormClient({ event }: Props) {
     }
 
     return true;
+  };
+
+  // スロットIDから元のtime_slot_idと時間を抽出
+  const parseSlotId = (slotId: string) => {
+    const parts = slotId.split('_');
+    const hour = parts.pop();
+    const originalSlotId = parts.join('_');
+    return { originalSlotId, hour };
   };
 
   const handleSubmit = async () => {
@@ -170,16 +207,44 @@ export default function ResponseFormClient({ event }: Props) {
     setIsSubmitting(true);
 
     try {
+      // 回答を元のスロットIDごとに集約
+      const aggregatedResponses: Record<string, { statuses: ResponseStatus[]; comments: string[] }> = {};
+
+      for (const [slotId, response] of Object.entries(responses)) {
+        const { originalSlotId } = parseSlotId(slotId);
+        if (!aggregatedResponses[originalSlotId]) {
+          aggregatedResponses[originalSlotId] = { statuses: [], comments: [] };
+        }
+        if (response.status) {
+          aggregatedResponses[originalSlotId].statuses.push(response.status);
+        }
+        if (response.comment?.trim()) {
+          aggregatedResponses[originalSlotId].comments.push(response.comment.trim());
+        }
+      }
+
+      // 集約した回答から最終的なステータスを決定
+      const finalResponses = Object.entries(aggregatedResponses).map(([originalSlotId, data]) => {
+        let status: ResponseStatus = 'ng';
+        if (data.statuses.every((s) => s === 'ok')) {
+          status = 'ok';
+        } else if (data.statuses.some((s) => s === 'ok' || s === 'maybe')) {
+          status = 'maybe';
+        }
+
+        return {
+          time_slot_id: originalSlotId,
+          status,
+          comment: data.comments.join(' / ') || null,
+        };
+      });
+
       const response = await fetch(`/api/events/${event.id}/responses`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: name.trim(),
-          responses: Object.entries(responses).map(([slotId, r]) => ({
-            time_slot_id: slotId,
-            status: r.status,
-            comment: r.comment.trim() || null,
-          })),
+          responses: finalResponses,
         }),
       });
 
@@ -275,87 +340,143 @@ export default function ResponseFormClient({ event }: Props) {
           {sortedDates.map((date) => {
             const slots = groupedSlots[date];
             const isExpanded = expandedDates.has(date);
+            const completionStatus = getDateCompletionStatus(date);
             const dateStatus = getDateStatus(date);
 
             return (
               <div
                 key={date}
-                className="bg-white rounded-xl border border-slate-200 overflow-hidden"
+                className={`bg-white rounded-xl border overflow-hidden transition-colors ${
+                  completionStatus === 'complete'
+                    ? 'border-green-300 bg-green-50/30'
+                    : completionStatus === 'partial'
+                    ? 'border-amber-300'
+                    : 'border-slate-200'
+                }`}
               >
-                {/* Date header */}
-                <div className="flex items-center gap-3 p-4">
+                {/* Date header - clickable to expand */}
+                <button
+                  onClick={() => toggleDate(date)}
+                  className="w-full flex items-center gap-3 p-4 text-left hover:bg-slate-50 transition-colors"
+                >
+                  {/* Completion status icon */}
+                  <div className="flex-shrink-0">
+                    {completionStatus === 'complete' ? (
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
+                        dateStatus === 'ok' ? 'bg-green-100' :
+                        dateStatus === 'ng' ? 'bg-red-100' :
+                        'bg-amber-100'
+                      }`}>
+                        <CheckCircle2 className={`w-5 h-5 ${
+                          dateStatus === 'ok' ? 'text-green-600' :
+                          dateStatus === 'ng' ? 'text-red-600' :
+                          'text-amber-600'
+                        }`} />
+                      </div>
+                    ) : completionStatus === 'partial' ? (
+                      <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center">
+                        <AlertCircle className="w-5 h-5 text-amber-600" />
+                      </div>
+                    ) : (
+                      <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center">
+                        <Circle className="w-5 h-5 text-slate-400" />
+                      </div>
+                    )}
+                  </div>
+
                   <div className="flex-1">
                     <div className="font-medium text-slate-900">
                       {format(parseDate(date), 'M/d (E)', { locale: ja })}
                     </div>
                     <div className="text-sm text-slate-500">
                       {slots.length}件の時間帯
+                      {completionStatus === 'complete' && (
+                        <span className="ml-2 text-green-600">回答済み</span>
+                      )}
+                      {completionStatus === 'partial' && (
+                        <span className="ml-2 text-amber-600">一部未回答</span>
+                      )}
                     </div>
                   </div>
 
-                  {/* Quick response buttons */}
-                  <ResponseButtonGroup
-                    value={dateStatus}
-                    onChange={(status) => setDateStatus(date, status)}
-                    size="sm"
-                  />
-
-                  {/* Expand button */}
-                  <button
-                    onClick={() => toggleDate(date)}
-                    className={`
-                      p-2 rounded-lg transition-colors
-                      ${isExpanded ? 'bg-blue-50 text-blue-600' : 'hover:bg-slate-100 text-slate-400'}
-                    `}
-                  >
+                  {/* Expand indicator */}
+                  <div className={`p-2 rounded-lg ${isExpanded ? 'bg-blue-50 text-blue-600' : 'text-slate-400'}`}>
                     {isExpanded ? (
                       <ChevronUp className="w-5 h-5" />
                     ) : (
                       <ChevronDown className="w-5 h-5" />
                     )}
-                  </button>
-                </div>
+                  </div>
+                </button>
 
                 {/* Time slots (expanded) */}
                 {isExpanded && (
-                  <div className="border-t border-slate-100 divide-y divide-slate-100">
-                    {slots.map((slot) => {
-                      const slotResponse = responses[slot.id];
-                      const isMaybe = slotResponse?.status === 'maybe';
+                  <div className="border-t border-slate-100">
+                    {/* Select all buttons */}
+                    <div className="p-3 bg-slate-50 border-b border-slate-100">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-slate-500 mr-2">すべて選択:</span>
+                        <button
+                          onClick={() => setDateStatus(date, 'ok')}
+                          className="px-3 py-1.5 text-xs font-medium rounded-full bg-green-100 text-green-700 hover:bg-green-200 transition-colors"
+                        >
+                          ○ すべてOK
+                        </button>
+                        <button
+                          onClick={() => setDateStatus(date, 'maybe')}
+                          className="px-3 py-1.5 text-xs font-medium rounded-full bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors"
+                        >
+                          △ すべて調整可
+                        </button>
+                        <button
+                          onClick={() => setDateStatus(date, 'ng')}
+                          className="px-3 py-1.5 text-xs font-medium rounded-full bg-red-100 text-red-700 hover:bg-red-200 transition-colors"
+                        >
+                          × すべてNG
+                        </button>
+                      </div>
+                    </div>
 
-                      return (
-                        <div key={slot.id} className="p-4">
-                          <div className="flex items-center gap-3">
-                            <div className="flex-1">
-                              <span className="text-sm font-medium text-slate-700">
-                                {formatTime(slot.start_time)} 〜 {formatTime(slot.end_time)}
-                              </span>
-                            </div>
-                            <ResponseButtonGroup
-                              value={slotResponse?.status || null}
-                              onChange={(status) => setSlotStatus(slot.id, status)}
-                              size="sm"
-                            />
-                          </div>
+                    {/* Individual time slots */}
+                    <div className="divide-y divide-slate-100">
+                      {slots.map((slot) => {
+                        const slotResponse = responses[slot.id];
+                        const isMaybe = slotResponse?.status === 'maybe';
 
-                          {/* Comment for maybe */}
-                          {isMaybe && (
-                            <div className="mt-3">
-                              <Textarea
-                                placeholder="例：13:00以降なら○、30分程度なら可"
-                                value={slotResponse?.comment || ''}
-                                onChange={(e) => setSlotComment(slot.id, e.target.value)}
-                                rows={2}
-                                className="text-sm"
+                        return (
+                          <div key={slot.id} className="p-4">
+                            <div className="flex items-center gap-3">
+                              <div className="flex-1">
+                                <span className="text-sm font-medium text-slate-700">
+                                  {slot.time}〜
+                                </span>
+                              </div>
+                              <ResponseButtonGroup
+                                value={slotResponse?.status || null}
+                                onChange={(status) => setSlotStatus(slot.id, status)}
+                                size="sm"
                               />
-                              <p className="text-xs text-amber-600 mt-1">
-                                ※ 調整可能な条件を入力してください
-                              </p>
                             </div>
-                          )}
-                        </div>
-                      );
-                    })}
+
+                            {/* Comment for maybe */}
+                            {isMaybe && (
+                              <div className="mt-3">
+                                <Textarea
+                                  placeholder="例：30分程度なら可、15:00以降ならOK"
+                                  value={slotResponse?.comment || ''}
+                                  onChange={(e) => setSlotComment(slot.id, e.target.value)}
+                                  rows={2}
+                                  className="text-sm"
+                                />
+                                <p className="text-xs text-amber-600 mt-1">
+                                  ※ 調整可能な条件を入力してください
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
               </div>
