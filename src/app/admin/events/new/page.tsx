@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Calendar, Clock, FileText } from 'lucide-react';
+import { ArrowLeft, Calendar, Clock, FileText, RefreshCw, CalendarCheck } from 'lucide-react';
 import Link from 'next/link';
 import { format, isSameDay } from 'date-fns';
 import { v4 as uuidv4 } from 'uuid';
@@ -22,7 +22,11 @@ interface TimeSlot {
 export default function NewEventPage() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingCalendar, setIsLoadingCalendar] = useState(false);
+  const [calendarError, setCalendarError] = useState<string | null>(null);
   const [step, setStep] = useState(1);
+  const [workStartHour, setWorkStartHour] = useState(9);
+  const [workEndHour, setWorkEndHour] = useState(18);
 
   // Form state
   const [title, setTitle] = useState('');
@@ -63,6 +67,64 @@ export default function NewEventPage() {
 
   const handleRemoveSlot = (slotId: string) => {
     setTimeSlots(timeSlots.filter((s) => s.id !== slotId));
+  };
+
+  // Googleカレンダーから空き時間を取得
+  const handleFetchFromCalendar = async () => {
+    if (selectedDates.length === 0) {
+      alert('まず候補日を選択してください');
+      return;
+    }
+
+    setIsLoadingCalendar(true);
+    setCalendarError(null);
+
+    try {
+      const dates = selectedDates.map((d) => format(d, 'yyyy-MM-dd'));
+
+      const response = await fetch('/api/calendar/available-slots', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dates,
+          workStartHour,
+          workEndHour,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'カレンダーの取得に失敗しました');
+      }
+
+      const result = await response.json();
+
+      // 取得した空き時間をスロットに追加
+      const newSlots: TimeSlot[] = result.data.map((slot: { date: string; start_time: string; end_time: string }) => ({
+        id: uuidv4(),
+        date: slot.date,
+        start_time: slot.start_time,
+        end_time: slot.end_time,
+      }));
+
+      // 既存のスロットとマージ（重複を除く）
+      const mergedSlots = [...timeSlots];
+      for (const newSlot of newSlots) {
+        const exists = mergedSlots.some(
+          (s) => s.date === newSlot.date && s.start_time === newSlot.start_time && s.end_time === newSlot.end_time
+        );
+        if (!exists) {
+          mergedSlots.push(newSlot);
+        }
+      }
+
+      setTimeSlots(mergedSlots);
+    } catch (error) {
+      console.error('Error fetching calendar:', error);
+      setCalendarError(error instanceof Error ? error.message : 'カレンダーの取得に失敗しました');
+    } finally {
+      setIsLoadingCalendar(false);
+    }
   };
 
   const handleSubmit = async () => {
@@ -233,11 +295,75 @@ export default function NewEventPage() {
       {/* Step 3: Time Selection */}
       {step === 3 && (
         <div className="space-y-6">
+          {/* Google Calendar Integration */}
+          <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-blue-200 p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <CalendarCheck className="w-5 h-5 text-blue-600" />
+              <h3 className="font-semibold text-slate-900">Googleカレンダーから空き時間を取得</h3>
+            </div>
+            <p className="text-sm text-slate-600 mb-4">
+              Googleカレンダーの予定を確認し、空いている時間帯を自動で追加します。
+            </p>
+
+            {/* Work hours settings */}
+            <div className="flex items-center gap-4 mb-4">
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-slate-600">勤務時間:</label>
+                <select
+                  value={workStartHour}
+                  onChange={(e) => setWorkStartHour(Number(e.target.value))}
+                  className="px-2 py-1 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {Array.from({ length: 24 }, (_, i) => (
+                    <option key={i} value={i}>{i}:00</option>
+                  ))}
+                </select>
+                <span className="text-slate-400">〜</span>
+                <select
+                  value={workEndHour}
+                  onChange={(e) => setWorkEndHour(Number(e.target.value))}
+                  className="px-2 py-1 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {Array.from({ length: 24 }, (_, i) => (
+                    <option key={i} value={i}>{i}:00</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <Button
+              variant="outline"
+              onClick={handleFetchFromCalendar}
+              disabled={isLoadingCalendar || selectedDates.length === 0}
+              className="w-full bg-white"
+            >
+              {isLoadingCalendar ? (
+                <>
+                  <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                  取得中...
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="w-4 h-4 mr-2" />
+                  カレンダーから空き時間を取得
+                </>
+              )}
+            </Button>
+
+            {calendarError && (
+              <p className="text-sm text-red-600 mt-2">{calendarError}</p>
+            )}
+          </div>
+
+          {/* Manual time slot editor */}
           <div>
             <div className="flex items-center gap-2 mb-4">
               <Clock className="w-5 h-5 text-blue-500" />
               <h2 className="font-semibold text-slate-900">時間帯を設定</h2>
             </div>
+            <p className="text-sm text-slate-500 mb-4">
+              カレンダーから取得した空き時間を編集するか、手動で時間帯を追加できます。
+            </p>
             <TimeSlotEditor
               selectedDates={selectedDates}
               timeSlots={timeSlots}
